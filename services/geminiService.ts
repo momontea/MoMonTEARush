@@ -1,7 +1,9 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { REWARD_TIERS } from "../constants";
 
 // Initialize Gemini Client
+// The API key must be obtained exclusively from the environment variable process.env.API_KEY.
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export interface DrinkRecipe {
@@ -19,6 +21,11 @@ export interface DrinkRecipe {
 
 export const generateMoMonSpecial = async (score: number): Promise<DrinkRecipe> => {
   try {
+    if (!process.env.API_KEY) {
+        console.warn("API Key is missing. Using offline mode.");
+        throw new Error("Missing API Key");
+    }
+
     const model = 'gemini-2.5-flash';
     
     // Calculate reward tier strict logic
@@ -81,6 +88,7 @@ export const generateMoMonSpecial = async (score: number): Promise<DrinkRecipe> 
 
   } catch (error) {
     console.error("Error generating drink:", error);
+    // Fallback recipe if AI fails or no API Key
     return {
       name: "Té Sin Conexión",
       description: "El wifi se fue, pero el sabor se queda.",
