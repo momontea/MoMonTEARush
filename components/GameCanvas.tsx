@@ -12,12 +12,13 @@ interface Item {
   x: number;
   y: number;
   type: 'boba' | 'fruit' | 'leaf' | 'bad' | 'ice' | 'gold' | 'magnet' | 'shield';
-  fruitType?: number; // 0: Strawberry, 1: Lemon, 2: Orange, 3: Kiwi, 4: Peach, 5: Blueberry
+  fruitType?: number; 
   speed: number;
   size: number;
   id: number;
   rotation: number;
   rotSpeed: number;
+  passed?: boolean; 
 }
 
 interface Particle {
@@ -37,13 +38,15 @@ interface FloatingText {
     life: number;
     color: string;
     scale: number;
+    vx: number; 
+    vy: number;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
-  // UI State (Throttled)
+  // UI State
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(3);
   const [combo, setCombo] = useState(0);
@@ -52,7 +55,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
   const [sugarRush, setSugarRush] = useState(false);
   const [nextTier, setNextTier] = useState<{name: string, score: number, percent: number} | null>(null);
 
-  // Game Loop State (Mutable for performance)
+  // Game Loop State
   const state = useRef({
     isPlaying: true,
     lastTime: 0,
@@ -63,7 +66,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     combo: 0,
     comboTimer: 0,
     
-    // Status Effects
     powerUp: 'none' as PowerUpType,
     powerUpTimer: 0,
     frozenTimer: 0,
@@ -71,12 +73,17 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     sugarRushTimer: 0,
     sugarRushCharge: 0,
     
-    width: 0,
-    height: 0,
+    bounceTimer: 0,
+
+    // Logical Dimensions (CSS Pixels)
+    width: 360, 
+    height: 800,
+    dpr: 1, // Device Pixel Ratio
+    
     playerX: 0,
     targetX: 0,
-    playerWidth: 90,
-    playerHeight: 110,
+    playerWidth: 100, // Larger cup for mobile
+    playerHeight: 120,
     shake: 0,
     bgPulse: 0,
     
@@ -88,8 +95,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
   const requestRef = useRef<number>(0);
 
   const getNextTierInfo = (currentScore: number) => {
+      if (currentScore < REWARD_TIERS.BRONZE.minScore) 
+          return { name: REWARD_TIERS.BRONZE.name, score: REWARD_TIERS.BRONZE.minScore, prev: 0 };
       if (currentScore < REWARD_TIERS.SILVER.minScore) 
-          return { name: REWARD_TIERS.SILVER.name, score: REWARD_TIERS.SILVER.minScore, prev: 0 };
+          return { name: REWARD_TIERS.SILVER.name, score: REWARD_TIERS.SILVER.minScore, prev: REWARD_TIERS.BRONZE.minScore };
       if (currentScore < REWARD_TIERS.GOLD.minScore) 
           return { name: REWARD_TIERS.GOLD.name, score: REWARD_TIERS.GOLD.minScore, prev: REWARD_TIERS.SILVER.minScore };
       if (currentScore < REWARD_TIERS.DIAMOND.minScore) 
@@ -97,14 +106,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
       return { name: 'MAX', score: currentScore, prev: 0 };
   };
 
-  const createParticles = (x: number, y: number, color: string, count: number = 5) => {
-    if (state.current.particles.length > 60) return; // Limit particles for mobile performance
+  const createParticles = (x: number, y: number, color: string, count: number = 5, explosion: boolean = false) => {
+    if (state.current.particles.length > 60) return; 
+    const speed = explosion ? 25 : 15;
     for (let i = 0; i < count; i++) {
       state.current.particles.push({
         x,
         y,
-        vx: (Math.random() - 0.5) * 20,
-        vy: (Math.random() - 0.5) * 20,
+        vx: (Math.random() - 0.5) * speed,
+        vy: (Math.random() - 0.5) * speed,
         life: 1.0,
         color,
         size: Math.random() * 8 + 3
@@ -112,27 +122,39 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     }
   };
 
-  const addFloatingText = (x: number, y: number, text: string, color: string) => {
+  const addFloatingText = (x: number, y: number, text: string, color: string, size: 'sm'|'md'|'lg' = 'md') => {
+      const baseVx = (Math.random() - 0.5) * 5;
+      const baseVy = -8 - Math.random() * 5;
       state.current.floatingTexts.push({
-          x, y, text, color, life: 1.0, scale: 1
+          x, y, text, color, 
+          life: 1.0, 
+          scale: size === 'lg' ? 1.5 : size === 'md' ? 1.0 : 0.7,
+          vx: baseVx,
+          vy: baseVy
       });
   };
 
-  // --- BRANDING: DRAWING THE LOGO CUP ---
+  // --- DRAWING LOGIC ---
   const drawCup = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) => {
     const s = state.current;
+    const now = Date.now();
+
+    // BOUNCE LOGIC (PURE TRANSLATION)
+    let bounceY = 0;
+    if (s.bounceTimer > 0) {
+        const t = 1 - (s.bounceTimer / GAME_CONFIG.bounceDuration);
+        bounceY = -Math.sin(t * Math.PI) * GAME_CONFIG.bounceHeight;
+    }
+
     const shakeX = (Math.random() - 0.5) * s.shake;
     const shakeY = (Math.random() - 0.5) * s.shake;
     if (s.shake > 0) s.shake *= 0.9;
 
     const drawX = x + shakeX;
-    const drawY = y + shakeY;
+    const drawY = y + shakeY + bounceY; 
     const centerX = drawX + w/2;
-    const centerY = drawY + h/2;
-    const now = Date.now();
-
-    // --- POWER UP VISUALS (BEHIND CUP) ---
-    // 1. MAGNET AURA (Pulsing Purple Field)
+    
+    // --- POWER UP VISUALS ---
     if (s.powerUp === 'magnet') {
         ctx.save();
         const pulseSpeed = now / 200;
@@ -140,13 +162,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
         const warningFlicker = (s.powerUpTimer < 1500 && Math.floor(now / 100) % 2 === 0) ? 0.2 : 0.6; 
 
         ctx.beginPath();
-        ctx.arc(centerX, centerY, w * 0.8 + pulseSize, 0, Math.PI * 2);
+        ctx.arc(centerX, drawY + h/2, w * 0.8 + pulseSize, 0, Math.PI * 2);
         ctx.fillStyle = BRAND_COLORS.purple;
         ctx.globalAlpha = warningFlicker * 0.3;
         ctx.fill();
         
         ctx.beginPath();
-        ctx.arc(centerX, centerY, w * 0.6 - pulseSize, 0, Math.PI * 2);
+        ctx.arc(centerX, drawY + h/2, w * 0.6 - pulseSize, 0, Math.PI * 2);
         ctx.strokeStyle = BRAND_COLORS.purple;
         ctx.lineWidth = 4;
         ctx.globalAlpha = warningFlicker;
@@ -155,7 +177,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
         ctx.restore();
     }
 
-    // Frozen Effect (Ice Block)
+    // Frozen Effect
     if (s.frozenTimer > 0) {
         ctx.save();
         ctx.fillStyle = 'rgba(6, 182, 212, 0.5)'; 
@@ -167,49 +189,41 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     }
 
     // --- THE MOMON LOGO CUP ---
-
-    // 1. The Lid (Yellow)
     ctx.save();
     ctx.lineWidth = 6;
     ctx.lineJoin = 'round';
     ctx.strokeStyle = BRAND_COLORS.black;
 
-    // The Lid Background
+    // 1. The Lid (Yellow)
     ctx.fillStyle = BRAND_COLORS.yellow;
     ctx.beginPath();
     ctx.ellipse(centerX, drawY, w/2 + 5, 15, 0, 0, Math.PI*2);
     ctx.fill();
     
-    // FLAT LEAF DESIGN (Improved Perspective)
-    // We draw this BEFORE the stroke of the lid so it looks painted on
+    // FLAT LEAF
     ctx.fillStyle = BRAND_COLORS.green;
     ctx.beginPath();
-    
     const leafW = 40;
-    const leafH = 8; // Very small height to match perspective
-    
-    // Draw a leaf shape that conforms to the ellipse perspective
+    const leafH = 8; 
     ctx.moveTo(centerX - leafW, drawY); 
     ctx.bezierCurveTo(centerX - leafW/2, drawY - leafH, centerX + leafW/2, drawY - leafH, centerX + leafW, drawY); 
     ctx.bezierCurveTo(centerX + leafW/2, drawY + leafH, centerX - leafW/2, drawY + leafH, centerX - leafW, drawY); 
     ctx.fill();
     
-    // Leaf Vein
     ctx.beginPath();
-    ctx.strokeStyle = '#1a472e'; // Dark green vein
+    ctx.strokeStyle = '#1a472e'; 
     ctx.lineWidth = 2;
     ctx.moveTo(centerX - leafW + 5, drawY);
     ctx.lineTo(centerX + leafW - 5, drawY);
     ctx.stroke();
 
-    // Re-apply the main lid stroke to ensure clean edges
     ctx.strokeStyle = BRAND_COLORS.black;
     ctx.lineWidth = 6;
     ctx.beginPath();
     ctx.ellipse(centerX, drawY, w/2 + 5, 15, 0, 0, Math.PI*2);
     ctx.stroke();
 
-    // 2. The Cup Body (Red Tapered)
+    // 2. The Cup Body
     ctx.fillStyle = s.sugarRush ? '#ff00ff' : BRAND_COLORS.red;
     if (s.sugarRush) {
         const hue = (now / 2) % 360;
@@ -231,18 +245,17 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     ctx.fill();
     ctx.stroke();
 
-    // 3. The Eye (Cyclops Style) - BIG and Green
+    // 3. The Eye
     const eyeY = drawY + h * 0.35;
     const eyeSize = w * 0.35;
     
-    // Sclera (White)
     ctx.fillStyle = BRAND_COLORS.white;
     ctx.beginPath();
     ctx.arc(centerX, eyeY, eyeSize, 0, Math.PI*2);
     ctx.fill();
     ctx.stroke();
 
-    // Iris (Green)
+    // Iris
     let lookX = 0;
     let lookY = 0;
     if (s.items.length > 0) {
@@ -258,13 +271,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     ctx.arc(centerX + lookX, eyeY + lookY, eyeSize * 0.7, 0, Math.PI*2);
     ctx.fill();
 
-    // Pupil (Black)
+    // Pupil
     ctx.fillStyle = BRAND_COLORS.black;
     ctx.beginPath();
     ctx.arc(centerX + lookX, eyeY + lookY, eyeSize * 0.35, 0, Math.PI*2);
     ctx.fill();
 
-    // Glint (White)
+    // Glint
     ctx.fillStyle = BRAND_COLORS.white;
     ctx.beginPath();
     ctx.arc(centerX + lookX - 5, eyeY + lookY - 5, eyeSize * 0.1, 0, Math.PI*2);
@@ -289,37 +302,30 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     ctx.stroke();
     ctx.restore();
 
-    // --- POWER UP VISUALS (OVERLAY) ---
-
-    // 2. SHIELD BUBBLE (Rotating Blue Forcefield)
+    // --- OVERLAY VISUALS ---
     if (s.powerUp === 'shield') {
         ctx.save();
         const rotateSpeed = now / 500;
         const warningAlpha = (s.powerUpTimer < 1500 && Math.floor(now / 100) % 2 === 0) ? 0.1 : 0.4; 
 
+        const cx = drawX + w/2;
+        const cy = drawY + h/2;
+
         ctx.fillStyle = BRAND_COLORS.blue;
         ctx.globalAlpha = warningAlpha;
         ctx.beginPath();
-        ctx.arc(centerX, centerY, w * 0.85, 0, Math.PI * 2);
+        ctx.arc(cx, cy, w * 0.85, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.strokeStyle = '#93c5fd'; 
         ctx.lineWidth = 5;
         ctx.globalAlpha = 0.8;
-        ctx.translate(centerX, centerY);
+        ctx.translate(cx, cy);
         ctx.rotate(rotateSpeed);
         ctx.beginPath();
         ctx.setLineDash([20, 15]);
         ctx.arc(0, 0, w * 0.85, 0, Math.PI * 2);
         ctx.stroke();
-
-        ctx.rotate(-rotateSpeed); 
-        ctx.globalAlpha = 0.5;
-        ctx.fillStyle = 'white';
-        ctx.beginPath();
-        ctx.ellipse(-w*0.3, -h*0.3, 15, 8, Math.PI / 4, 0, Math.PI * 2);
-        ctx.fill();
-
         ctx.restore();
     }
   };
@@ -330,280 +336,113 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     ctx.rotate(item.rotation);
     
     if (item.type === 'ice') {
-        ctx.fillStyle = '#a5f3fc';
-        ctx.strokeStyle = '#0891b2';
-        ctx.lineWidth = 2;
-        ctx.fillRect(-item.size/2, -item.size/2, item.size, item.size);
-        ctx.strokeRect(-item.size/2, -item.size/2, item.size, item.size);
-        ctx.fillStyle = 'white';
-        ctx.globalAlpha = 0.5;
-        ctx.fillRect(-item.size/2 + 5, -item.size/2 + 5, item.size/2, 5);
-        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = '#a5f3fc'; ctx.strokeStyle = '#0891b2'; ctx.lineWidth = 2;
+        ctx.fillRect(-item.size/2, -item.size/2, item.size, item.size); ctx.strokeRect(-item.size/2, -item.size/2, item.size, item.size);
+        ctx.fillStyle = 'white'; ctx.globalAlpha = 0.5; ctx.fillRect(-item.size/2 + 5, -item.size/2 + 5, item.size/2, 5); ctx.globalAlpha = 1.0;
     }
     else if (item.type === 'magnet' || item.type === 'shield') {
         ctx.fillStyle = item.type === 'magnet' ? BRAND_COLORS.purple : BRAND_COLORS.blue;
-        ctx.beginPath();
-        ctx.arc(0, 0, item.size/2, 0, Math.PI*2);
-        ctx.fill();
-        ctx.strokeStyle = 'white';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 20px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.beginPath(); ctx.arc(0, 0, item.size/2, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = 'white'; ctx.lineWidth = 3; ctx.stroke();
+        ctx.fillStyle = 'white'; ctx.font = 'bold 20px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(item.type === 'magnet' ? 'U' : 'S', 0, 0);
     }
     else if (item.type === 'boba' || item.type === 'gold') {
       ctx.fillStyle = item.type === 'gold' ? '#FFD700' : BRAND_COLORS.black;
-      if (item.type === 'gold') {
-        ctx.shadowBlur = 15;
-        ctx.shadowColor = '#FFD700';
-      }
-      ctx.beginPath();
-      ctx.arc(0, 0, item.size / 2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.beginPath();
-      ctx.arc(-item.size/4, -item.size/4, item.size/5, 0, Math.PI * 2);
-      ctx.fill();
+      if (item.type === 'gold') { ctx.shadowBlur = 15; ctx.shadowColor = '#FFD700'; }
+      ctx.beginPath(); ctx.arc(0, 0, item.size / 2, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.beginPath(); ctx.arc(-item.size/4, -item.size/4, item.size/5, 0, Math.PI * 2); ctx.fill();
     } 
     else if (item.type === 'fruit') {
       const s = item.size;
       const fType = item.fruitType || 0;
-      
-      // 0: STRAWBERRY (Red)
-      if (fType === 0) {
-          ctx.fillStyle = '#ef4444'; 
-          ctx.strokeStyle = '#7f1d1d';
-          ctx.lineWidth = 2;
-          
-          ctx.beginPath();
-          ctx.moveTo(0, s/2);
-          ctx.bezierCurveTo(-s/1.5, -s/3, -s/2, -s/2, 0, -s/2);
-          ctx.bezierCurveTo(s/2, -s/2, s/1.5, -s/3, 0, s/2);
-          ctx.fill();
-          ctx.stroke();
-          
-          ctx.fillStyle = 'rgba(250, 204, 21, 0.6)'; 
-          const positions = [{x: -5, y: -5}, {x: 5, y: -5}, {x: 0, y: 5}, {x: -7, y: 2}, {x: 7, y: 2}, {x: 0, y: -10}];
-          positions.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 1.5, 0, Math.PI*2); ctx.fill(); });
-
-          ctx.fillStyle = BRAND_COLORS.green;
-          ctx.beginPath();
-          ctx.moveTo(0, -s/2);
-          ctx.lineTo(-8, -s/2 - 8); 
-          ctx.lineTo(-3, -s/2); 
-          ctx.lineTo(0, -s/2 - 10); 
-          ctx.lineTo(3, -s/2);
-          ctx.lineTo(8, -s/2 - 8); 
-          ctx.closePath();
-          ctx.fill();
+      if (fType === 0) { // Strawberry
+          ctx.fillStyle = '#ef4444'; ctx.strokeStyle = '#7f1d1d'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(0, s/2); ctx.bezierCurveTo(-s/1.5, -s/3, -s/2, -s/2, 0, -s/2); ctx.bezierCurveTo(s/2, -s/2, s/1.5, -s/3, 0, s/2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = BRAND_COLORS.green; ctx.beginPath(); ctx.moveTo(0, -s/2); ctx.lineTo(-8, -s/2-8); ctx.lineTo(-3, -s/2); ctx.lineTo(0, -s/2-10); ctx.lineTo(3, -s/2); ctx.lineTo(8, -s/2-8); ctx.fill();
+      } else if (fType === 1) { // Lemon
+          ctx.fillStyle = '#fef08a'; ctx.strokeStyle = '#eab308'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0,0,s/2,0,Math.PI*2); ctx.fill(); ctx.stroke();
+      } else if (fType === 2) { // Orange
+          ctx.fillStyle = '#fdba74'; ctx.strokeStyle = '#ea580c'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0,0,s/2,0,Math.PI*2); ctx.fill(); ctx.stroke();
+      } else if (fType === 3) { // Kiwi
+          ctx.fillStyle = '#bef264'; ctx.strokeStyle = '#854d0e'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0,0,s/2,0,Math.PI*2); ctx.fill(); ctx.stroke(); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(0,0,s/6,s/8,0,0,Math.PI*2); ctx.fill();
+      } else if (fType === 4) { // Peach
+          ctx.fillStyle = '#fca5a5'; ctx.strokeStyle = '#be123c'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0,0,s/2,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.moveTo(0,-s/2); ctx.quadraticCurveTo(s/4,0,0,s/2); ctx.stroke();
+          ctx.fillStyle = '#4ade80'; ctx.beginPath(); ctx.ellipse(5, -s/2, 8, 4, -Math.PI/4, 0, Math.PI*2); ctx.fill();
+      } else { // Blueberry
+          ctx.fillStyle = '#3b82f6'; ctx.beginPath(); ctx.arc(0,0,s/2,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle = '#1e3a8a'; ctx.beginPath(); ctx.rect(-3, -3, 6, 6); ctx.fill();
       }
-      // 1: LEMON (Yellow Slice)
-      else if (fType === 1) {
-            ctx.fillStyle = '#fef08a'; 
-            ctx.strokeStyle = '#eab308'; 
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(0, 0, s/2, 0, Math.PI*2);
-            ctx.fill();
-            ctx.stroke();
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            for(let i=0; i<8; i++) {
-                ctx.moveTo(0,0);
-                const a = (i * Math.PI * 2) / 8;
-                ctx.lineTo(Math.cos(a)*s/2, Math.sin(a)*s/2);
-            }
-            ctx.stroke();
-      }
-      // 2: ORANGE (Orange Slice)
-      else if (fType === 2) {
-            ctx.fillStyle = '#fdba74'; 
-            ctx.strokeStyle = '#ea580c'; 
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(0, 0, s/2, 0, Math.PI*2);
-            ctx.fill();
-            ctx.stroke();
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            for(let i=0; i<8; i++) {
-                ctx.moveTo(0,0);
-                const a = (i * Math.PI * 2) / 8;
-                ctx.lineTo(Math.cos(a)*s/2, Math.sin(a)*s/2);
-            }
-            ctx.stroke();
-      }
-      // 3: KIWI (Green Slice)
-      else if (fType === 3) {
-            ctx.fillStyle = '#bef264'; 
-            ctx.strokeStyle = '#854d0e'; 
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(0, 0, s/2, 0, Math.PI*2);
-            ctx.fill();
-            ctx.stroke();
-            ctx.fillStyle = '#ffffff';
-            ctx.beginPath();
-            ctx.ellipse(0, 0, s/6, s/8, 0, 0, Math.PI*2);
-            ctx.fill();
-            ctx.fillStyle = 'black';
-            for(let i=0; i<12; i++) {
-                const a = (i * Math.PI * 2) / 12;
-                const r = s/3;
-                ctx.beginPath();
-                ctx.arc(Math.cos(a)*r, Math.sin(a)*r, 1.5, 0, Math.PI*2);
-                ctx.fill();
-            }
-      }
-      // 4: PEACH (Pink)
-      else if (fType === 4) {
-            ctx.fillStyle = '#fca5a5'; 
-            ctx.strokeStyle = '#be123c'; 
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.arc(0, 0, s/2, 0, Math.PI*2);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.moveTo(0, -s/2);
-            ctx.quadraticCurveTo(s/4, 0, 0, s/2);
-            ctx.stroke();
-            ctx.fillStyle = '#4ade80';
-            ctx.beginPath();
-            ctx.ellipse(5, -s/2, 8, 4, -Math.PI/4, 0, Math.PI*2);
-            ctx.fill();
-      }
-      // 5: BLUEBERRY (Blue)
-      else {
-            ctx.fillStyle = '#3b82f6'; 
-            ctx.beginPath();
-            ctx.arc(0, 0, s/2, 0, Math.PI*2);
-            ctx.fill();
-            ctx.fillStyle = '#1e3a8a';
-            ctx.beginPath();
-            ctx.rect(-3, -3, 6, 6); 
-            ctx.fill();
-      }
-
     } 
     else if (item.type === 'leaf') {
-        // IMPROVED LEAF: REALISTIC TEA LEAF
-        ctx.fillStyle = BRAND_COLORS.green;
-        ctx.strokeStyle = '#1a472e';
-        ctx.lineWidth = 2;
-        
-        ctx.beginPath();
-        // Pointed ends, wide middle
-        ctx.moveTo(0, -item.size/2); // Top tip
-        ctx.quadraticCurveTo(item.size/2, 0, 0, item.size/2); // Right side
-        ctx.quadraticCurveTo(-item.size/2, 0, 0, -item.size/2); // Left side
-        ctx.fill();
-        ctx.stroke();
-        
-        // Center Vein
-        ctx.beginPath();
-        ctx.moveTo(0, -item.size/2 + 5);
-        ctx.lineTo(0, item.size/2 - 5);
-        ctx.lineWidth = 1;
-        ctx.stroke();
+        ctx.fillStyle = BRAND_COLORS.green; ctx.strokeStyle = '#1a472e'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(0, -item.size/2); ctx.quadraticCurveTo(item.size/2, 0, 0, item.size/2); ctx.quadraticCurveTo(-item.size/2, 0, 0, -item.size/2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, -item.size/2 + 5); ctx.lineTo(0, item.size/2 - 5); ctx.lineWidth = 1; ctx.stroke();
         
     } else if (item.type === 'bad') {
-        ctx.fillStyle = '#4b5563';
-        ctx.strokeStyle = '#1f2937';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        const spikes = 8;
-        for(let i=0; i<spikes*2; i++) {
-            const angle = (Math.PI * i) / spikes;
-            const r = (i % 2 === 0) ? item.size/2 : item.size/4;
-            ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
-        }
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = '#ef4444';
-        ctx.beginPath();
-        ctx.arc(-6, -4, 3, 0, Math.PI*2);
-        ctx.arc(6, -4, 3, 0, Math.PI*2);
-        ctx.fill();
+        ctx.fillStyle = '#4b5563'; ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 2;
+        ctx.beginPath(); const spikes = 8;
+        for(let i=0; i<spikes*2; i++) { const angle = (Math.PI * i) / spikes; const r = (i % 2 === 0) ? item.size/2 : item.size/4; ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r); }
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(-6, -4, 3, 0, Math.PI*2); ctx.arc(6, -4, 3, 0, Math.PI*2); ctx.fill();
     }
     ctx.restore();
   };
 
   const spawnItem = (width: number, currentScore: number, isRush: boolean) => {
     const fruitType = Math.floor(Math.random() * 6);
+    // INCREASED SIZE FOR MOBILE VISIBILITY
+    const baseSize = 45; 
     
+    const baseItem = {
+        x: Math.random() * (width - 60) + 30,
+        y: -70,
+        id: Date.now() + Math.random(),
+        rotation: Math.random() * Math.PI,
+        fruitType,
+        rotSpeed: (Math.random() - 0.5) * 0.2
+    };
+
     if (isRush) {
         return {
-            x: Math.random() * (width - 60) + 30,
-            y: -60,
+            ...baseItem,
             type: Math.random() > 0.8 ? 'fruit' : 'gold',
-            fruitType: fruitType,
             speed: GAME_CONFIG.gravity * 2.5, 
-            size: 35,
-            id: Date.now() + Math.random(),
-            rotation: Math.random(),
-            rotSpeed: 0.2
+            size: 55, // Bigger rush items
         } as Item;
     }
 
     const rand = Math.random();
     let type: Item['type'] = 'boba';
     let speed = GAME_CONFIG.gravity;
-    let size = 30;
+    let size = 45; // Bigger standard items
     const difficultyLevel = Math.floor(currentScore / 2000);
     const speedMultiplier = 1 + (difficultyLevel * 0.15);
     
-    if (rand > 0.99) { 
-        const pRand = Math.random();
-        type = pRand > 0.5 ? 'magnet' : 'shield';
-        speed *= 0.9;
-        size = 45;
-    }
-    else if (rand > 0.97) {
-        type = 'gold';
-        speed *= 1.8; 
-        size = 35;
+    const isHardcore = currentScore > 9000;
+
+    if (isHardcore) {
+        if (rand > 0.99) { type = Math.random() > 0.5 ? 'magnet' : 'shield'; speed *= 0.9; size = 55; }
+        else if (rand > 0.97) { type = 'gold'; speed *= 1.8; size = 50; } 
+        else if (rand > 0.85) { type = 'ice'; speed *= 1.3 * speedMultiplier; size = 50; } 
+        else if (rand > 0.65) { type = 'bad'; speed *= 1.2 * speedMultiplier; size = 55; } 
+        else if (rand > 0.50) { type = 'fruit'; speed *= 1.4; size = 50; }
+        else if (rand > 0.40) { type = 'leaf'; speed *= 1.1; size = 40; }
     } 
-    else if (rand > 0.92 - (difficultyLevel * 0.02)) { 
-        type = 'ice';
-        speed *= 1.2 * speedMultiplier;
-        size = 40;
-    }
-    else if (rand > 0.80 - (difficultyLevel * 0.03)) { 
-        type = 'bad';
-        speed *= 1.1 * speedMultiplier; 
-        size = 45;
-    }
-    else if (rand > 0.65) {
-        type = 'fruit';
-        speed *= 1.3;
-        size = 35;
-    }
-    else if (rand > 0.5) {
-        type = 'leaf';
-        speed *= 1.0;
-        size = 32;
+    else {
+        if (rand > 0.99) { type = Math.random() > 0.5 ? 'magnet' : 'shield'; speed *= 0.9; size = 55; }
+        else if (rand > 0.97) { type = 'gold'; speed *= 1.8; size = 50; } 
+        else if (rand > 0.92 - (difficultyLevel * 0.02)) { type = 'ice'; speed *= 1.2 * speedMultiplier; size = 50; }
+        else if (rand > 0.80 - (difficultyLevel * 0.03)) { type = 'bad'; speed *= 1.1 * speedMultiplier; size = 55; }
+        else if (rand > 0.65) { type = 'fruit'; speed *= 1.3; size = 50; }
+        else if (rand > 0.5) { type = 'leaf'; speed *= 1.0; size = 40; }
     }
 
     speed *= speedMultiplier;
-    speed = Math.min(speed, 25);
+    if (isHardcore) speed *= 1.3;
+    speed = Math.min(speed, 35); 
 
-    return {
-      x: Math.random() * (width - 60) + 30,
-      y: -60,
-      type,
-      fruitType: type === 'fruit' ? fruitType : 0,
-      speed,
-      size,
-      id: Date.now() + Math.random(),
-      rotation: Math.random() * Math.PI,
-      rotSpeed: (Math.random() - 0.5) * 0.2,
-    };
+    return { ...baseItem, type, speed, size } as Item;
   };
 
   const gameLoop = (time: number) => {
@@ -622,19 +461,20 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     }
 
     try {
+        // Logic Updates
         if (s.powerUp !== 'none') {
             s.powerUpTimer -= dt;
             if (s.powerUpTimer <= 0) s.powerUp = 'none';
         }
-        if (s.frozenTimer > 0) {
-            s.frozenTimer -= dt;
-        }
+        if (s.frozenTimer > 0) s.frozenTimer -= dt;
+        if (s.bounceTimer > 0) s.bounceTimer -= dt; 
+
         if (s.sugarRush) {
             s.sugarRushTimer -= dt;
             if (s.sugarRushTimer <= 0) {
                 s.sugarRush = false;
                 s.sugarRushCharge = 0;
-                AudioService.setRushMode(false); // Back to normal music
+                AudioService.setRushMode(false); 
                 s.items = []; 
             }
         }
@@ -645,7 +485,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
         }
 
         s.spawnTimer += dt;
+        
         let currentSpawnRate = Math.max(GAME_CONFIG.minSpawnRate, GAME_CONFIG.baseSpawnRate - (s.score * 0.05));
+        if (s.score > 9000) currentSpawnRate = 120; 
         if (s.sugarRush) currentSpawnRate = 60; 
 
         if (s.spawnTimer > currentSpawnRate) {
@@ -653,22 +495,27 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
             s.spawnTimer = 0;
         }
 
-        const playerY = s.height - s.playerHeight - 20;
+        // --- CRITICAL FIX: PLAYER POSITION ---
+        // Use a fixed offset from the bottom logic coordinate, not dynamic calculation per frame
+        // This ensures it stays above mobile nav bars
+        const playerY = s.height - s.playerHeight - 80; 
+        
         const hitbox = { 
             x: s.playerX + 15, 
             y: playerY + 10, 
             w: s.playerWidth - 30, 
             h: 60 
         };
-        const magnetX = s.playerX + s.playerWidth/2;
-        const magnetY = playerY + s.playerHeight/2;
+        const centerX = s.playerX + s.playerWidth/2;
+        const centerY = playerY + s.playerHeight/2;
 
+        // Collision Loop
         for (let i = s.items.length - 1; i >= 0; i--) {
             const item = s.items[i];
             
             if (s.powerUp === 'magnet' && !['bad', 'ice'].includes(item.type) && item.y > 50) {
-                const dx = magnetX - item.x;
-                const dy = magnetY - item.y;
+                const dx = centerX - item.x;
+                const dy = centerY - item.y;
                 const dist = Math.sqrt(dx*dx + dy*dy);
                 if (dist < 500) {
                     item.x += (dx / dist) * 15;
@@ -687,16 +534,26 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
                 hit = true;
             }
 
+            if (!hit && !item.passed && item.y > hitbox.y && item.y < hitbox.y + hitbox.h) {
+                const dx = Math.abs(item.x - centerX);
+                if (dx < hitbox.w + GAME_CONFIG.nearMissDistance && (item.type === 'bad' || item.type === 'ice')) {
+                    item.passed = true;
+                    s.score += 50;
+                    addFloatingText(centerX, playerY - 80, "¡CASI!", "#ffa500", 'sm');
+                }
+            }
+
             if (hit) {
                 s.items.splice(i, 1);
+                s.bounceTimer = GAME_CONFIG.bounceDuration;
                 
                 if (item.type === 'bad') {
                     if (s.powerUp === 'shield') {
                         s.powerUp = 'none';
-                        AudioService.playBad(); // Still play sound but muffled? Or a shield break sound?
-                        createParticles(item.x, item.y, BRAND_COLORS.blue, 15);
+                        AudioService.playBad();
+                        createParticles(item.x, item.y, BRAND_COLORS.blue, 15, true);
                         s.shake = 15;
-                        addFloatingText(s.playerX, playerY - 50, "¡ESCUDO ROTO!", BRAND_COLORS.blue);
+                        addFloatingText(s.playerX, playerY - 50, "¡ESCUDO ROTO!", BRAND_COLORS.blue, 'lg');
                     } else if (!s.sugarRush) {
                         s.lives -= 1;
                         s.shake = 40; 
@@ -705,10 +562,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
                         const penalty = Math.min(s.score, GAME_CONFIG.penaltyScore);
                         s.score -= penalty;
                         
-                        AudioService.playBad(); // SOUND FX
-                        createParticles(item.x, item.y, '#555555', 20);
-                        addFloatingText(s.playerX, playerY - 80, "¡AUCH!", "#FF0000");
-                        addFloatingText(s.playerX, playerY - 40, `-${penalty}`, "#FF0000");
+                        AudioService.playBad(); 
+                        createParticles(item.x, item.y, '#555555', 20, true);
+                        addFloatingText(s.playerX, playerY - 80, "¡AUCH!", "#FF0000", 'lg');
+                        addFloatingText(s.playerX, playerY - 40, `-${penalty}`, "#FF0000", 'lg');
                         
                         if (s.lives <= 0) {
                             s.isPlaying = false;
@@ -722,23 +579,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
                     if (s.powerUp === 'shield') {
                          s.powerUp = 'none';
                          AudioService.playBad(); 
-                         addFloatingText(s.playerX, playerY - 50, "¡BLOQUEADO!", BRAND_COLORS.blue);
+                         addFloatingText(s.playerX, playerY - 50, "¡BLOQUEADO!", BRAND_COLORS.blue, 'md');
                     } else if (!s.sugarRush) {
                         s.frozenTimer = GAME_CONFIG.freezeDuration;
-                        AudioService.playFreeze(); // SOUND FX
-                        createParticles(item.x, item.y, '#06b6d4', 20);
-                        addFloatingText(s.playerX + 20, playerY - 50, "¡CONGELADO!", "#06b6d4");
+                        AudioService.playFreeze(); 
+                        createParticles(item.x, item.y, '#06b6d4', 20, true);
+                        addFloatingText(s.playerX + 20, playerY - 50, "¡CONGELADO!", "#06b6d4", 'lg');
                         s.combo = 0;
                     }
                 }
                 else if (['magnet', 'shield'].includes(item.type)) {
                     s.powerUp = item.type as PowerUpType;
                     s.powerUpTimer = GAME_CONFIG.powerUpDuration;
-                    AudioService.playPowerUp(); // SOUND FX
-                    createParticles(item.x, item.y, '#FFFFFF', 20);
+                    AudioService.playPowerUp();
+                    createParticles(item.x, item.y, '#FFFFFF', 20, true);
                     s.score += 100;
                     const text = item.type === 'magnet' ? '¡IMÁN!' : '¡ESCUDO!';
-                    addFloatingText(s.playerX + 20, playerY - 50, text, "#A020F0");
+                    addFloatingText(s.playerX + 20, playerY - 50, text, "#A020F0", 'lg');
                 } 
                 else {
                     let points = 10;
@@ -757,8 +614,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
                         if (s.sugarRushCharge >= 100) {
                             s.sugarRush = true;
                             s.sugarRushTimer = GAME_CONFIG.sugarRushDuration;
-                            AudioService.setRushMode(true); // RUSH MUSIC
-                            addFloatingText(s.width/2 - 80, s.height/2, "¡MODO FIEBRE!", "#FF00FF");
+                            AudioService.setRushMode(true);
+                            addFloatingText(s.width/2, s.height/2, "¡MODO FIEBRE!", "#FF00FF", 'lg');
                             if (s.lives < 3) s.lives++;
                         }
                     }
@@ -767,9 +624,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
                     const pts = Math.floor(points * multiplier);
                     s.score += pts;
                     
-                    AudioService.playCollect(s.combo); // SOUND FX
-                    createParticles(item.x, item.y, color, 4);
-                    addFloatingText(item.x, item.y - 20, `+${pts}`, color);
+                    AudioService.playCollect(s.combo);
+                    createParticles(item.x, item.y, color, 6);
+                    const txtSize = s.combo > 10 ? 'lg' : 'md';
+                    addFloatingText(item.x, item.y - 20, `+${pts}`, color, txtSize);
                 }
             } else if (item.y > s.height + 50) {
                 s.items.splice(i, 1);
@@ -784,15 +642,18 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
             p.x += p.vx;
             p.y += p.vy;
             p.vy += 0.5; 
-            p.life -= 0.05;
+            p.life -= 0.03;
             if (p.life <= 0) s.particles.splice(i, 1);
         }
 
         for (let i = s.floatingTexts.length - 1; i >= 0; i--) {
             const t = s.floatingTexts[i];
-            t.y -= 1.5;
+            t.x += t.vx;
+            t.y += t.vy;
+            t.vy += 0.2;
             t.life -= 0.02;
-            t.scale += 0.01;
+            if (t.life > 0.8) t.scale += 0.1;
+            else t.scale = Math.max(0, t.scale - 0.01);
             if (t.life <= 0) s.floatingTexts.splice(i, 1);
         }
 
@@ -800,9 +661,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
         if (s.comboTimer <= 0 && s.combo > 0) s.combo = 0;
         s.bgPulse += 0.02 + (s.combo * 0.01); 
 
-        // --- RENDER ---
-        ctx.clearRect(0, 0, s.width, s.height);
+        // --- RENDER PHASE ---
+        // 1. Clear Canvas using Physical Dimensions
+        ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset scale to clear correctly
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         
+        // 2. Scale Context for Logical Drawing
+        ctx.scale(s.dpr, s.dpr);
+
+        // 3. Draw Background
         if (s.frozenTimer > 0) {
              ctx.fillStyle = '#ecfeff';
              ctx.fillRect(0,0,s.width, s.height);
@@ -810,10 +677,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
              ctx.lineWidth = 20;
              ctx.strokeRect(0,0,s.width,s.height);
         } else if (s.sugarRush) {
-            ctx.fillStyle = `rgba(255, 225, 21, 0.2)`;
-            ctx.fillRect(0, 0, s.width, s.height);
-            const hue = (Date.now() / 10) % 360;
-            ctx.fillStyle = `hsla(${hue}, 80%, 60%, 0.1)`;
+            const hue = (Date.now() / 5) % 360;
+            ctx.fillStyle = `hsla(${hue}, 80%, 90%, 0.3)`;
             ctx.fillRect(0, 0, s.width, s.height);
         } else {
             const pulseSize = 100 + Math.sin(s.bgPulse) * (10 + s.combo*2);
@@ -823,6 +688,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
             ctx.fill();
         }
 
+        // 4. Draw Game Objects (in logical pixels)
         drawCup(ctx, s.playerX, playerY, s.playerWidth, s.playerHeight);
         s.items.forEach(item => drawItem(ctx, item));
         
@@ -839,16 +705,18 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
             ctx.save();
             ctx.globalAlpha = t.life;
             ctx.fillStyle = t.color;
-            ctx.font = `900 ${24 * t.scale}px Verdana`;
+            const fontSize = 24 * t.scale;
+            ctx.font = `900 ${fontSize}px Verdana`;
             ctx.strokeStyle = 'white';
             ctx.lineWidth = 4;
             ctx.lineJoin = 'round';
-            ctx.strokeText(t.text, t.x - (ctx.measureText(t.text).width/2), t.y);
-            ctx.fillText(t.text, t.x - (ctx.measureText(t.text).width/2), t.y);
+            const tx = t.x - (ctx.measureText(t.text).width/2);
+            ctx.strokeText(t.text, tx, t.y);
+            ctx.fillText(t.text, tx, t.y);
             ctx.restore();
         });
 
-        if (time - s.lastUiSync > 150) {
+        if (time - s.lastUiSync > 100) { 
             setScore(s.score);
             setLives(s.lives);
             setCombo(s.combo);
@@ -879,6 +747,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     if (state.current.frozenTimer > 0) return; 
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
+    // Input is already in CSS pixels (Logical), so we match it to the Logical width
     const x = clientX - rect.left;
     state.current.targetX = x - state.current.playerWidth / 2;
   };
@@ -896,10 +765,22 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     const handleResize = () => {
         if (containerRef.current && canvasRef.current) {
             const { width, height } = containerRef.current.getBoundingClientRect();
-            canvasRef.current.width = width;
-            canvasRef.current.height = height;
+            const dpr = window.devicePixelRatio || 1;
+            
+            // 1. Set Canvas Physical Resolution (Internal)
+            canvasRef.current.width = width * dpr;
+            canvasRef.current.height = height * dpr;
+            
+            // 2. Set Canvas CSS Size (Display)
+            canvasRef.current.style.width = `${width}px`;
+            canvasRef.current.style.height = `${height}px`;
+
+            // 3. Update Game Logic Dimensions (Logical)
             state.current.width = width;
             state.current.height = height;
+            state.current.dpr = dpr;
+
+            // 4. Reset Player Position
             if (state.current.playerX === 0) {
                  state.current.playerX = width/2 - state.current.playerWidth/2;
                  state.current.targetX = width/2 - state.current.playerWidth/2;
@@ -920,7 +801,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
     state.current.sugarRushCharge = 0;
     state.current.frozenTimer = 0;
     
-    // START MUSIC
     AudioService.startMusic();
 
     requestRef.current = requestAnimationFrame(gameLoop);
@@ -929,7 +809,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
         window.removeEventListener('resize', handleResize);
         cancelAnimationFrame(requestRef.current);
         state.current.isPlaying = false;
-        // STOP MUSIC
         AudioService.stopMusic();
     };
   }, [onGameOver]);
@@ -939,9 +818,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
       
       <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none select-none z-20">
         <div className="flex flex-col items-start gap-2">
-            <div className="bg-white border-4 border-momon-black rounded-xl px-4 py-2 shadow-[4px_4px_0px_0px_rgba(35,31,32,1)] min-w-[120px]">
+            <div className="bg-white border-4 border-momon-black rounded-xl px-4 py-2 shadow-[4px_4px_0px_0px_rgba(35,31,32,1)] min-w-[120px] transition-transform duration-100 origin-top-left" style={{ transform: combo > 10 ? 'scale(1.1)' : 'scale(1)' }}>
                 <span className={`text-3xl font-black tracking-tighter block ${sugarRush ? 'text-momon-red animate-pulse' : 'text-momon-black'}`}>
-                    {score}
+                    {score.toLocaleString()}
                 </span>
                 {nextTier && (
                     <div className="w-full mt-1">
@@ -974,7 +853,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
             </div>
 
             {combo > 1 && (
-                <div className={`bg-momon-red text-white px-3 py-1 rounded-full border-2 border-momon-black font-bold text-sm ${combo > 8 ? 'animate-pulse scale-110' : 'animate-bounce'}`}>
+                <div className={`bg-momon-red text-white px-3 py-1 rounded-full border-2 border-momon-black font-bold text-sm ${combo > 8 ? 'animate-pulse scale-110 ring-4 ring-yellow-400' : 'animate-bounce'}`}>
                     {combo}x COMBO!
                 </div>
             )}
@@ -991,12 +870,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ onGameOver }) => {
                     />
                 ))}
             </div>
-            <div className="w-32 h-5 bg-white border-4 border-momon-black rounded-full overflow-hidden relative mt-1">
+            <div className={`w-32 h-5 bg-white border-4 border-momon-black rounded-full overflow-hidden relative mt-1 ${sugarRush ? 'scale-110 shadow-lg shadow-yellow-400' : ''}`}>
                 <div 
                     className="h-full bg-gradient-to-r from-pink-500 to-yellow-400 transition-all duration-200"
                     style={{ width: `${state.current.sugarRushCharge}%` }}
                 />
-                {sugarRush && <span className="absolute inset-0 flex items-center justify-center text-[9px] font-black text-white tracking-widest bg-black/20">MODO FIEBRE</span>}
+                {sugarRush && <span className="absolute inset-0 flex items-center justify-center text-[9px] font-black text-white tracking-widest bg-black/20 animate-pulse">¡FIEBRE!</span>}
             </div>
         </div>
       </div>

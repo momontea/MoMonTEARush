@@ -1,6 +1,7 @@
+
 import React, { useEffect, useState } from 'react';
 import { generateMoMonSpecial, DrinkRecipe } from '../services/geminiService';
-import { Loader2, Share2, Home, Copy, CheckCircle, Save } from 'lucide-react';
+import { Loader2, Share2, Home, Copy, CheckCircle, Save, RefreshCw } from 'lucide-react';
 
 interface BaristaAIProps {
   score: number;
@@ -20,8 +21,17 @@ export const BaristaAI: React.FC<BaristaAIProps> = ({ score, onHome }) => {
       setRecipe(result);
       setLoading(false);
       
-      // Save to Wallet Automatically
-      saveToWallet(result);
+      // LOGIC CORRECTION: Determine if it's a valid prize
+      const val = result.reward.discountValue;
+      
+      // Check for "0%", "0", or failure. 
+      // Also explicitly allow "BEBIDA GRATIS" or "5%", "10%", etc.
+      const isZero = val === '0%' || val === '0' || val === '00';
+      const isNovice = result.tierName === 'PRINCIPIANTE' || score < 3500;
+
+      if (!isZero && !isNovice && val !== 'N/A') {
+          saveToWallet(result);
+      }
     };
     fetchDrink();
   }, [score]); 
@@ -29,6 +39,9 @@ export const BaristaAI: React.FC<BaristaAIProps> = ({ score, onHome }) => {
   const saveToWallet = (drink: DrinkRecipe) => {
       const savedCoupons = JSON.parse(localStorage.getItem('momon_wallet') || '[]');
       
+      // Prevent duplicate saving of the exact same code generated in this session
+      if (savedToWallet) return;
+
       const newCoupon = {
           id: Date.now().toString(),
           name: drink.name,
@@ -36,7 +49,7 @@ export const BaristaAI: React.FC<BaristaAIProps> = ({ score, onHome }) => {
           code: drink.reward.discountCode,
           value: drink.reward.discountValue,
           createdAt: Date.now(),
-          expiresAt: Date.now() + (72 * 60 * 60 * 1000) // 72 Hours in milliseconds
+          expiresAt: Date.now() + (72 * 60 * 60 * 1000) // 72 Hours
       };
 
       const updatedCoupons = [newCoupon, ...savedCoupons];
@@ -46,7 +59,11 @@ export const BaristaAI: React.FC<BaristaAIProps> = ({ score, onHome }) => {
 
   const handleShare = () => {
     if (recipe) {
-      const text = `¡Logré ${score} puntos en MoMon Tea Rush! (Nivel ${recipe.tierName}) Premio: ${recipe.reward.discountValue}! #MoMonTea`;
+      const hasPrize = recipe.reward.discountValue !== '0%';
+      const text = hasPrize 
+        ? `¡Logré ${score} puntos en MoMon Tea Rush! (Nivel ${recipe.tierName}) Premio: ${recipe.reward.discountValue}! #MoMonTea`
+        : `¡Hice ${score} puntos en MoMon Tea Rush! Casi llego al premio. ¿Puedes superarme? #MoMonTea`;
+        
       if (navigator.share) {
         navigator.share({ title: 'MoMon Tea Rush', text: text, url: window.location.href }).catch(console.error);
       } else {
@@ -80,6 +97,10 @@ export const BaristaAI: React.FC<BaristaAIProps> = ({ score, onHome }) => {
     );
   }
 
+  // Determine if we show the "You Won" UI or the "Try Again" UI
+  const prizeValue = recipe?.reward.discountValue || '0%';
+  const hasPrize = prizeValue !== '0%' && prizeValue !== '0' && prizeValue !== 'N/A';
+
   return (
     <div className="absolute inset-0 overflow-y-auto bg-momon-yellow p-4 flex flex-col items-center min-h-screen">
       
@@ -95,7 +116,7 @@ export const BaristaAI: React.FC<BaristaAIProps> = ({ score, onHome }) => {
                 </div>
                 <div className="text-right flex flex-col items-end">
                     <p className="text-xs font-bold text-gray-400 uppercase">NIVEL</p>
-                    <span className="bg-momon-black text-white px-2 py-1 rounded text-sm font-black uppercase">
+                    <span className={`px-2 py-1 rounded text-sm font-black uppercase ${hasPrize ? 'bg-momon-black text-white' : 'bg-gray-200 text-gray-500'}`}>
                         {recipe?.tierName}
                     </span>
                 </div>
@@ -109,27 +130,38 @@ export const BaristaAI: React.FC<BaristaAIProps> = ({ score, onHome }) => {
                 "{recipe?.description}"
             </p>
 
-            {/* Reward Coupon */}
-            <div className="w-full bg-momon-black p-1 rounded-xl mb-6 transform rotate-1 hover:rotate-0 transition-transform duration-300">
-                <div className="bg-momon-yellow border-2 border-dashed border-momon-black rounded-lg p-4 flex flex-col items-center">
-                    <p className="text-xs font-black text-momon-black uppercase mb-1">TU PREMIO</p>
-                    <h3 className="text-4xl font-black text-momon-red mb-2">{recipe?.reward.discountValue}</h3>
-                    
-                    <div 
-                        onClick={copyCode}
-                        className="w-full bg-white border-2 border-momon-black py-2 px-4 rounded flex items-center justify-between cursor-pointer active:scale-95 transition-transform"
-                    >
-                        <span className="font-mono font-bold text-lg text-gray-800 tracking-widest">
-                            {recipe?.reward.discountCode}
-                        </span>
-                        {copied ? <CheckCircle className="text-green-500" size={20}/> : <Copy className="text-gray-400" size={20}/>}
-                    </div>
-                    <div className="flex items-center justify-center mt-2 gap-1">
-                         <CheckCircle size={12} className="text-momon-green" />
-                         <p className="text-[10px] font-bold text-momon-black">Guardado en Mis Premios (72h)</p>
+            {/* Reward Coupon OR Try Again */}
+            {hasPrize ? (
+                <div className="w-full bg-momon-black p-1 rounded-xl mb-6 transform rotate-1 hover:rotate-0 transition-transform duration-300">
+                    <div className="bg-momon-yellow border-2 border-dashed border-momon-black rounded-lg p-4 flex flex-col items-center">
+                        <p className="text-xs font-black text-momon-black uppercase mb-1">TU PREMIO</p>
+                        <h3 className="text-4xl font-black text-momon-red mb-2">{recipe?.reward.discountValue}</h3>
+                        
+                        <div 
+                            onClick={copyCode}
+                            className="w-full bg-white border-2 border-momon-black py-2 px-4 rounded flex items-center justify-between cursor-pointer active:scale-95 transition-transform"
+                        >
+                            <span className="font-mono font-bold text-lg text-gray-800 tracking-widest">
+                                {recipe?.reward.discountCode}
+                            </span>
+                            {copied ? <CheckCircle className="text-green-500" size={20}/> : <Copy className="text-gray-400" size={20}/>}
+                        </div>
+                        <div className="flex items-center justify-center mt-2 gap-1">
+                            <CheckCircle size={12} className="text-momon-green" />
+                            <p className="text-[10px] font-bold text-momon-black">Guardado en Mis Premios (72h)</p>
+                        </div>
                     </div>
                 </div>
-            </div>
+            ) : (
+                <div className="w-full bg-gray-100 p-6 rounded-xl mb-6 border-4 border-gray-300 border-dashed flex flex-col items-center">
+                    <RefreshCw size={48} className="text-gray-400 mb-2" />
+                    <h3 className="text-2xl font-black text-gray-500 mb-1">¡CASI LO LOGRAS!</h3>
+                    <p className="text-sm font-bold text-gray-600 leading-snug">
+                        Necesitas más de <span className="text-momon-red">3,500 puntos</span> para desbloquear premios.
+                    </p>
+                    <p className="text-xs mt-3 text-gray-400 font-bold uppercase tracking-wider">¡Sigue intentando!</p>
+                </div>
+            )}
 
             {/* Stats */}
             <div className="w-full grid grid-cols-2 gap-4 mb-6 text-left">
@@ -147,11 +179,13 @@ export const BaristaAI: React.FC<BaristaAIProps> = ({ score, onHome }) => {
                 </div>
             </div>
             
-             <div className="mb-6 w-full bg-gray-100 p-2 rounded border-2 border-gray-200">
-                <p className="text-[10px] text-gray-500 font-bold text-center">
-                    * Puedes ver y canjear este premio desde el menú principal en "Mis Premios".
-                </p>
-            </div>
+            {hasPrize && (
+                <div className="mb-6 w-full bg-gray-100 p-2 rounded border-2 border-gray-200">
+                    <p className="text-[10px] text-gray-500 font-bold text-center">
+                        * Puedes ver y canjear este premio desde el menú principal en "Mis Premios".
+                    </p>
+                </div>
+            )}
 
             {/* Actions */}
             <div className="grid grid-cols-2 gap-3 w-full">

@@ -1,3 +1,4 @@
+
 export const BRAND_COLORS = {
   yellow: '#ffe115',
   red: '#ec061e',
@@ -9,11 +10,17 @@ export const BRAND_COLORS = {
   purple: '#a855f7' // Magnet
 };
 
-// DIFICULTAD AUMENTADA: Es mucho más difícil llegar a los premios altos.
+// DIFICULTAD AUMENTADA Y NUEVOS RANGOS
 export const REWARD_TIERS = {
-  BRONZE: { name: 'BRONCE', minScore: 0, discount: '5%', color: '#CD7F32' },
-  SILVER: { name: 'PLATA', minScore: 3000, discount: '10%', color: '#C0C0C0' },
-  GOLD:   { name: 'ORO',   minScore: 8000, discount: '20%', color: '#FFD700' },
+  // Menos de 3500 puntos
+  NOVICE: { name: 'PRINCIPIANTE', minScore: 0, discount: '0%', color: '#71717a' }, 
+  // 3500 - 7499
+  BRONZE: { name: 'BRONCE', minScore: 3500, discount: '5%', color: '#CD7F32' },
+  // 7500 - 10499
+  SILVER: { name: 'PLATA', minScore: 7500, discount: '10%', color: '#C0C0C0' },
+  // 10500 - 14999
+  GOLD:   { name: 'ORO',   minScore: 10500, discount: '20%', color: '#FFD700' },
+  // 15000+
   DIAMOND:{ name: 'DIAMANTE',minScore: 15000, discount: 'BEBIDA GRATIS', color: '#b9f2ff' }
 };
 
@@ -26,7 +33,12 @@ export const GAME_CONFIG = {
   sugarRushDuration: 5000,
   powerUpDuration: 5000,
   freezeDuration: 2000, // Tiempo congelado
-  penaltyScore: 500 // Puntos que pierdes por error
+  penaltyScore: 500, // Puntos que pierdes por error
+  
+  // DOPAMINE / JUICE CONFIG (CORREGIDO: SALTO)
+  nearMissDistance: 70,
+  bounceHeight: 20, // Píxeles que salta el vaso (Sin deformar)
+  bounceDuration: 150
 };
 
 export enum GameState {
@@ -36,7 +48,7 @@ export enum GameState {
   AI_REWARD = 'AI_REWARD'
 }
 
-export type PowerUpType = 'none' | 'magnet' | 'shield' | 'slow'; // 'ice' is an obstacle, not a powerup type state
+export type PowerUpType = 'none' | 'magnet' | 'shield' | 'slow';
 
 export interface HighScore {
   score: number;

@@ -296,7 +296,9 @@ export const MainMenu: React.FC<MainMenuProps> = ({ onStart, highScore }) => {
                     </button>
                 </div>
                 <div className="p-4 space-y-3">
-                    {Object.values(REWARD_TIERS).map((tier) => (
+                    {Object.values(REWARD_TIERS)
+                        .filter(tier => tier.minScore > 0) // HIDE THE NOVICE TIER FROM THE TABLE
+                        .map((tier) => (
                         <div key={tier.name} className="flex items-center justify-between p-3 border-2 border-momon-black rounded-xl" style={{ backgroundColor: `${tier.color}20` }}>
                             <div className="flex flex-col text-left">
                                 <span className="font-black text-lg uppercase" style={{ color: tier.color === '#ffffff' ? '#000' : tier.color }}>{tier.name}</span>
